@@ -1,0 +1,21 @@
+{
+  "name": "Eric Talk · 口语练习",
+  "short_name": "Eric Talk",
+  "description": "英语口语练习 · 日常/生活/职场/每日话题",
+  "start_url": "/eric-talk/",
+  "scope": "/eric-talk/",
+  "display": "standalone",
+  "background_color": "#e84040",
+  "theme_color": "#e84040",
+  "lang": "zh-CN",
+  "icons": [
+    {"src": "/eric-talk/icon-72.png", "sizes": "72x72", "type": "image/png"},
+    {"src": "/eric-talk/icon-96.png", "sizes": "96x96", "type": "image/png"},
+    {"src": "/eric-talk/icon-128.png", "sizes": "128x128", "type": "image/png"},
+    {"src": "/eric-talk/icon-144.png", "sizes": "144x144", "type": "image/png"},
+    {"src": "/eric-talk/icon-152.png", "sizes": "152x152", "type": "image/png"},
+    {"src": "/eric-talk/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/eric-talk/icon-384.png", "sizes": "384x384", "type": "image/png"},
+    {"src": "/eric-talk/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}
