@@ -421,281 +421,257 @@ body.listen-mode .flip-card.flipped .card-en{filter:none}
 <div class="toast" id="toast"></div>
 
 <script>
-// SPEECH ENGINE
+// SPEECH ENGINE v2
 // ============================================================
-// UNIFIED SPEECH ENGINE — inject into both apps
-// Features: rate control (0.6/0.9/1.3), progress bar (draggable sim),
-//           pause/resume, stop, floating player bar
+// SPEECH ENGINE v2 — word-highlight + inline player per card
 // ============================================================
-
-(function() {
-
+(function(){
 var SE = window.SpeechEngine = {
-  utt: null,
-  text: '',
-  rate: 0.9,
-  playing: false,
-  paused: false,
-  startTime: 0,
-  estDuration: 0,
-  progressInterval: null,
-  activeBtn: null,
+  rate: 1.0,
+  _cur: null, // {utt, words, containerId, timers:[]}
 
-  // ---- Public API ----
-  speak: function(text, btn) {
-    if (!window.speechSynthesis) return;
+  speak: function(text, containerId, opts) {
     SE.stop();
-    SE.text = text;
-    SE.activeBtn = btn || null;
-    SE._doSpeak();
-    SE._showBar();
+    if (!window.speechSynthesis) return;
+    opts = opts || {};
+    var words = text.trim().split(/\s+/);
+    var utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'en-US';
+    utt.rate = SE.rate;
+
+    SE._cur = { utt: utt, words: words, containerId: containerId, timers: [], startTime: Date.now() };
+
+    // Estimate total duration
+    var estMs = (words.length / 140) * 60000 / SE.rate;
+    SE._cur.estMs = estMs;
+
+    // Schedule per-word highlights
+    var msPerWord = estMs / words.length;
+    words.forEach(function(w, wi) {
+      var t = setTimeout(function() {
+        SE._highlightWord(containerId, wi);
+        SE._updateProgress(containerId, wi / words.length, SE._elapsed());
+      }, wi * msPerWord);
+      SE._cur.timers.push(t);
+    });
+
+    utt.onend = utt.onerror = function() {
+      SE._clearTimers();
+      SE._updateProgress(containerId, 1, estMs/1000);
+      SE._clearHighlight(containerId);
+      SE._updateBtn(containerId, false);
+    };
+
+    SE._updateBtn(containerId, true);
+    SE._updateRateBtns(containerId);
+    window.speechSynthesis.speak(utt);
   },
 
   stop: function() {
+    if (!SE._cur) return;
     window.speechSynthesis.cancel();
-    SE.playing = false;
-    SE.paused = false;
-    SE._clearProgress();
-    SE._resetBtn();
-    SE._updateBarState();
+    SE._clearTimers();
+    var cid = SE._cur.containerId;
+    SE._clearHighlight(cid);
+    SE._updateBtn(cid, false);
+    SE._updateProgress(cid, 0, 0);
+    SE._cur = null;
   },
 
-  togglePause: function() {
-    if (!SE.playing) return;
-    if (SE.paused) {
-      window.speechSynthesis.resume();
-      SE.paused = false;
-      SE._startProgress();
-    } else {
-      window.speechSynthesis.pause();
-      SE.paused = true;
-      SE._clearProgress();
-    }
-    SE._updateBarState();
-  },
-
-  setRate: function(r) {
+  setRate: function(r, containerId) {
     SE.rate = r;
-    var wasPlaying = SE.playing && !SE.paused;
-    if (SE.playing) {
+    // If playing same container, restart
+    if (SE._cur && SE._cur.containerId === containerId) {
+      var pct = SE._elapsed() / SE._cur.estMs;
+      var words = SE._cur.words;
+      var startIdx = Math.floor(pct * words.length);
+      var remainingText = words.slice(startIdx).join(' ');
       SE.stop();
-      if (wasPlaying) SE._doSpeak();
+      SE.speak(remainingText, containerId);
     }
-    SE._updateRateBtns();
+    SE._updateRateBtns(containerId);
   },
 
-  seek: function(pct) {
-    // Web Speech API doesn't support true seek; restart from approx position
-    if (!SE.text) return;
-    var words = SE.text.trim().split(/\s+/);
-    var startWord = Math.floor(words.length * pct);
-    SE.stop();
-    SE.text = words.slice(startWord).join(' ');
-    SE._doSpeak();
-  },
-
-  // ---- Internal ----
-  _doSpeak: function() {
-    SE.utt = new SpeechSynthesisUtterance(SE.text);
-    SE.utt.lang = 'en-US';
-    SE.utt.rate = SE.rate;
-    SE.playing = true;
-    SE.paused = false;
-    SE.startTime = Date.now();
-    // estimate duration: avg ~140 words/min at rate 1.0
-    var words = SE.text.trim().split(/\s+/).length;
-    SE.estDuration = (words / 140) * 60000 / SE.rate;
-    SE.utt.onend = SE.utt.onerror = function() {
-      SE.playing = false;
-      SE.paused = false;
-      SE._clearProgress();
-      SE._resetBtn();
-      SE._updateBarState();
-      SE._setProgress(1);
-      setTimeout(function(){ SE._setProgress(0); }, 600);
-    };
-    window.speechSynthesis.speak(SE.utt);
-    SE._startProgress();
-    SE._updateBarState();
-  },
-
-  _startProgress: function() {
-    SE._clearProgress();
-    SE.progressInterval = setInterval(function() {
-      if (!SE.playing || SE.paused) return;
-      var elapsed = Date.now() - SE.startTime;
-      var pct = Math.min(elapsed / SE.estDuration, 0.99);
-      SE._setProgress(pct);
-    }, 100);
-  },
-
-  _clearProgress: function() {
-    if (SE.progressInterval) { clearInterval(SE.progressInterval); SE.progressInterval = null; }
-  },
-
-  _setProgress: function(pct) {
-    var bar = document.getElementById('se-progress-fill');
-    var thumb = document.getElementById('se-progress-thumb');
-    var pct100 = Math.round(pct * 100);
-    if (bar) bar.style.width = pct100 + '%';
-    if (thumb) thumb.style.left = pct100 + '%';
-    var timeEl = document.getElementById('se-time');
-    if (timeEl && SE.estDuration) {
-      var elapsed = pct * SE.estDuration / 1000;
-      var total = SE.estDuration / 1000;
-      timeEl.textContent = SE._fmt(elapsed) + ' / ' + SE._fmt(total);
-    }
-  },
-
-  _fmt: function(s) {
-    var m = Math.floor(s / 60);
-    var sec = Math.floor(s % 60);
-    return m + ':' + (sec < 10 ? '0' : '') + sec;
-  },
-
-  _resetBtn: function() {
-    if (SE.activeBtn) {
-      SE.activeBtn.classList.remove('speaking');
-      SE.activeBtn = null;
-    }
-  },
-
-  _updateBarState: function() {
-    var bar = document.getElementById('se-player-bar');
-    if (!bar) return;
-    var pauseBtn = document.getElementById('se-pause-btn');
-    var stopBtn = document.getElementById('se-stop-btn');
-    if (SE.playing) {
-      bar.style.transform = 'translateY(0)';
-      bar.style.opacity = '1';
+  seekTo: function(pct, containerId) {
+    var words, text;
+    if (SE._cur && SE._cur.containerId === containerId) {
+      words = SE._cur.words;
     } else {
-      setTimeout(function(){
-        bar.style.transform = 'translateY(100%)';
-        bar.style.opacity = '0';
-      }, 1200);
+      // read from DOM
+      var el = document.getElementById(containerId + '-text');
+      if (!el) return;
+      words = (el.dataset.fulltext || el.textContent).trim().split(/\s+/);
     }
-    if (pauseBtn) pauseBtn.textContent = SE.paused ? '▶' : '⏸';
-    // highlight active rate btn
-    SE._updateRateBtns();
-    // update text preview
-    var preview = document.getElementById('se-text-preview');
-    if (preview && SE.text) {
-      preview.textContent = SE.text.length > 50 ? SE.text.substring(0, 50) + '…' : SE.text;
-    }
+    var startIdx = Math.floor(pct * words.length);
+    var remainingText = words.slice(startIdx).join(' ');
+    SE.stop();
+    SE.speak(remainingText, containerId);
   },
 
-  _updateRateBtns: function() {
-    var rates = [0.6, 0.9, 1.3];
-    rates.forEach(function(r) {
-      var btn = document.getElementById('se-rate-' + r.toString().replace('.',''));
-      if (btn) btn.classList.toggle('active', SE.rate === r);
+  _elapsed: function() {
+    if (!SE._cur) return 0;
+    return Date.now() - SE._cur.startTime;
+  },
+
+  _highlightWord: function(containerId, wi) {
+    var container = document.getElementById(containerId + '-text');
+    if (!container) return;
+    var spans = container.querySelectorAll('.se-word');
+    spans.forEach(function(s, i) {
+      s.classList.toggle('se-word-active', i === wi);
     });
   },
 
-  _showBar: function() {
-    var bar = document.getElementById('se-player-bar');
-    if (bar) { bar.style.transform = 'translateY(0)'; bar.style.opacity = '1'; }
+  _clearHighlight: function(containerId) {
+    var container = document.getElementById(containerId + '-text');
+    if (!container) return;
+    container.querySelectorAll('.se-word').forEach(function(s) {
+      s.classList.remove('se-word-active');
+    });
   },
 
-  // ---- Inject bar DOM ----
-  init: function() {
-    if (document.getElementById('se-player-bar')) return;
-    var html = '<div id="se-player-bar" style="'+
-      'position:fixed;bottom:0;left:0;right:0;z-index:9999;'+
-      'background:linear-gradient(135deg,#1a1a2e,#16213e);'+
-      'color:#fff;padding:10px 16px 14px;'+
-      'box-shadow:0 -4px 20px rgba(0,0,0,0.3);'+
-      'transform:translateY(100%);opacity:0;'+
-      'transition:transform 0.3s ease,opacity 0.3s ease;'+
-      'font-family:Nunito,sans-serif;'+
-      '">' +
-      // Text preview
-      '<div id="se-text-preview" style="font-size:11px;color:#aaa;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>' +
-      // Progress bar
-      '<div id="se-progress-wrap" style="position:relative;height:4px;background:rgba(255,255,255,0.15);border-radius:4px;margin-bottom:10px;cursor:pointer" onclick="SpeechEngine._onSeek(event)">' +
-        '<div id="se-progress-fill" style="height:100%;background:linear-gradient(90deg,#ff4b4b,#ff8c42);border-radius:4px;width:0%;transition:width 0.1s linear"></div>' +
-        '<div id="se-progress-thumb" style="position:absolute;top:50%;left:0%;transform:translate(-50%,-50%);width:12px;height:12px;background:#fff;border-radius:50%;box-shadow:0 0 4px rgba(0,0,0,0.3);cursor:grab;transition:left 0.1s linear" onmousedown="SpeechEngine._startDrag(event)" ontouchstart="SpeechEngine._startDrag(event)"></div>' +
-      '</div>' +
-      // Controls row
-      '<div style="display:flex;align-items:center;gap:8px">' +
-        // Pause/Resume
-        '<button id="se-pause-btn" onclick="SpeechEngine.togglePause()" style="'+
-          'background:rgba(255,255,255,0.15);border:none;color:#fff;border-radius:50%;'+
-          'width:32px;height:32px;font-size:14px;cursor:pointer;flex-shrink:0'+
-        '">⏸</button>' +
-        // Stop
-        '<button id="se-stop-btn" onclick="SpeechEngine.stop()" style="'+
-          'background:rgba(255,255,255,0.1);border:none;color:#fff;border-radius:50%;'+
-          'width:32px;height:32px;font-size:14px;cursor:pointer;flex-shrink:0'+
-        '">⏹</button>' +
-        // Spacer
-        '<div style="flex:1"></div>' +
-        // Time
-        '<div id="se-time" style="font-size:11px;color:#aaa;min-width:60px;text-align:center">0:00 / 0:00</div>' +
-        // Rate buttons
-        '<button id="se-rate-06" onclick="SpeechEngine.setRate(0.6)" style="'+
-          'background:rgba(255,255,255,0.1);border:none;color:#ccc;border-radius:12px;'+
-          'padding:4px 9px;font-size:11px;cursor:pointer;font-weight:700'+
-        '">0.6×</button>' +
-        '<button id="se-rate-09" onclick="SpeechEngine.setRate(0.9)" style="'+
-          'background:rgba(255,255,255,0.1);border:none;color:#ccc;border-radius:12px;'+
-          'padding:4px 9px;font-size:11px;cursor:pointer;font-weight:700'+
-        '">0.9×</button>' +
-        '<button id="se-rate-13" onclick="SpeechEngine.setRate(1.3)" style="'+
-          'background:rgba(255,255,255,0.1);border:none;color:#ccc;border-radius:12px;'+
-          'padding:4px 9px;font-size:11px;cursor:pointer;font-weight:700'+
-        '">1.3×</button>' +
+  _clearTimers: function() {
+    if (!SE._cur) return;
+    SE._cur.timers.forEach(clearTimeout);
+    SE._cur.timers = [];
+  },
+
+  _updateProgress: function(containerId, pct, elapsedSec) {
+    var fill = document.getElementById(containerId + '-prog-fill');
+    var thumb = document.getElementById(containerId + '-prog-thumb');
+    var time = document.getElementById(containerId + '-time');
+    var pct100 = Math.round(pct * 100);
+    if (fill) fill.style.width = pct100 + '%';
+    if (thumb) thumb.style.left = pct100 + '%';
+    if (time && SE._cur && SE._cur.estMs) {
+      var tot = SE._cur.estMs / 1000;
+      time.textContent = SE._fmt(elapsedSec) + ' / ' + SE._fmt(tot);
+    } else if (time) {
+      time.textContent = '';
+    }
+  },
+
+  _updateBtn: function(containerId, playing) {
+    var btn = document.getElementById(containerId + '-play-btn');
+    if (!btn) return;
+    btn.textContent = playing ? '⏹ 停止' : '🔈 朗读';
+    btn.classList.toggle('se-playing', playing);
+  },
+
+  _updateRateBtns: function(containerId) {
+    if (!containerId) return;
+    [0.6, 1.0, 1.3].forEach(function(r) {
+      var btn = document.getElementById(containerId + '-rate-' + r.toString().replace('.',''));
+      if (btn) btn.classList.toggle('se-rate-active', SE.rate === r);
+    });
+  },
+
+  _fmt: function(s) {
+    var m = Math.floor(s / 60), sec = Math.floor(s % 60);
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
+  },
+
+  // Build word-span HTML from plain text
+  buildWordSpans: function(text, containerId) {
+    var words = text.trim().split(/\s+/);
+    return '<span id="' + containerId + '-text" class="se-text-wrap" data-fulltext="' + text.replace(/"/g,'&quot;') + '">' +
+      words.map(function(w, i) {
+        return '<span class="se-word" data-wi="' + i + '">' + w.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>';
+      }).join(' ') +
+    '</span>';
+  },
+
+  // Build inline player HTML for a given containerId
+  buildPlayer: function(containerId, text) {
+    var escapedText = text.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    return '<div class="se-player" id="' + containerId + '-player">' +
+      // Play/stop btn
+      '<button id="' + containerId + '-play-btn" class="se-play-btn" onclick="SpeechEngine._togglePlay(\'' + containerId + '\',\'' + escapedText + '\')" >🔈 朗读</button>' +
+      // Rate
+      '<span class="se-rate-group">' +
+        '<button id="' + containerId + '-rate-06" class="se-rate-btn" onclick="SpeechEngine.setRate(0.6,\'' + containerId + '\')">慢</button>' +
+        '<button id="' + containerId + '-rate-10" class="se-rate-btn se-rate-active" onclick="SpeechEngine.setRate(1.0,\'' + containerId + '\')">正常</button>' +
+        '<button id="' + containerId + '-rate-13" class="se-rate-btn" onclick="SpeechEngine.setRate(1.3,\'' + containerId + '\')">快</button>' +
+      '</span>' +
+      // Time
+      '<span id="' + containerId + '-time" class="se-time"></span>' +
+      // Progress
+      '<div class="se-progress-wrap" id="' + containerId + '-prog" onclick="SpeechEngine._onBarClick(event,\'' + containerId + '\')" onmousedown="SpeechEngine._startDrag(event,\'' + containerId + '\')" ontouchstart="SpeechEngine._startDrag(event,\'' + containerId + '\')">' +
+        '<div class="se-progress-fill" id="' + containerId + '-prog-fill"></div>' +
+        '<div class="se-progress-thumb" id="' + containerId + '-prog-thumb"></div>' +
       '</div>' +
     '</div>';
-    // active rate style
-    var style = document.createElement('style');
-    style.textContent = '#se-player-bar button.active{background:linear-gradient(135deg,#ff4b4b,#ff8c42)!important;color:#fff!important;}';
-    document.head.appendChild(style);
-    var div = document.createElement('div');
-    div.innerHTML = html;
-    document.body.appendChild(div.firstChild);
-    SE._updateRateBtns();
   },
 
-  _onSeek: function(e) {
-    var wrap = document.getElementById('se-progress-wrap');
-    if (!wrap) return;
-    var rect = wrap.getBoundingClientRect();
-    var pct = (e.clientX - rect.left) / rect.width;
-    pct = Math.max(0, Math.min(1, pct));
-    SE.seek(pct);
+  _togglePlay: function(containerId, text) {
+    if (SE._cur && SE._cur.containerId === containerId) {
+      SE.stop();
+    } else {
+      SE.stop();
+      SE.speak(text, containerId);
+    }
   },
 
-  _startDrag: function(e) {
-    e.preventDefault();
-    var wrap = document.getElementById('se-progress-wrap');
-    function onMove(ev) {
-      var clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
-      var rect = wrap.getBoundingClientRect();
-      var pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      SE._setProgress(pct);
+  _onBarClick: function(e, containerId) {
+    var bar = document.getElementById(containerId + '-prog');
+    if (!bar) return;
+    var rect = bar.getBoundingClientRect();
+    var pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    SE.seekTo(pct, containerId);
+  },
+
+  _startDrag: function(e, containerId) {
+    e.preventDefault(); e.stopPropagation();
+    var bar = document.getElementById(containerId + '-prog');
+    if (!bar) return;
+    function move(ev) {
+      var cx = ev.touches ? ev.touches[0].clientX : ev.clientX;
+      var rect = bar.getBoundingClientRect();
+      var pct = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+      // visual update only
+      var fill = document.getElementById(containerId + '-prog-fill');
+      var thumb = document.getElementById(containerId + '-prog-thumb');
+      if (fill) fill.style.width = Math.round(pct*100) + '%';
+      if (thumb) thumb.style.left = Math.round(pct*100) + '%';
     }
-    function onUp(ev) {
-      var clientX = ev.changedTouches ? ev.changedTouches[0].clientX : ev.clientX;
-      var rect = wrap.getBoundingClientRect();
-      var pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      SE.seek(pct);
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.removeEventListener('touchmove', onMove);
-      document.removeEventListener('touchend', onUp);
+    function up(ev) {
+      var cx = ev.changedTouches ? ev.changedTouches[0].clientX : ev.clientX;
+      var rect = bar.getBoundingClientRect();
+      var pct = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+      SE.seekTo(pct, containerId);
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      document.removeEventListener('touchmove', move);
+      document.removeEventListener('touchend', up);
     }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.addEventListener('touchmove', onMove, {passive:false});
-    document.addEventListener('touchend', onUp);
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    document.addEventListener('touchmove', move, {passive:false});
+    document.addEventListener('touchend', up);
   }
 };
 
-document.addEventListener('DOMContentLoaded', function() { SE.init(); });
-if (document.readyState !== 'loading') SE.init();
+// Inject global styles
+var style = document.createElement('style');
+style.textContent = [
+  '.se-word{display:inline;transition:all 0.15s ease;border-radius:3px;padding:0 1px}',
+  '.se-word-active{background:#ffe066;color:#1a1a2e;font-weight:800;font-size:1.18em;box-shadow:0 2px 8px rgba(255,200,0,0.4);padding:0 3px;border-radius:4px}',
+  '.se-player{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px;padding:8px 10px;background:rgba(0,0,0,0.04);border-radius:10px}',
+  '.se-play-btn{background:linear-gradient(135deg,#ff4b4b,#ff8c42);color:#fff;border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}',
+  '.se-play-btn.se-playing{background:linear-gradient(135deg,#666,#444)}',
+  '.se-rate-group{display:flex;gap:3px}',
+  '.se-rate-btn{background:rgba(0,0,0,0.07);border:none;border-radius:10px;padding:4px 8px;font-size:11px;font-weight:700;color:#555;cursor:pointer}',
+  '.se-rate-btn.se-rate-active{background:linear-gradient(135deg,#ff4b4b,#ff8c42);color:#fff}',
+  '.se-time{font-size:10px;color:#999;min-width:55px;text-align:center}',
+  '.se-progress-wrap{flex:1;min-width:80px;height:6px;background:rgba(0,0,0,0.1);border-radius:6px;cursor:pointer;position:relative;touch-action:none}',
+  '.se-progress-fill{height:100%;background:linear-gradient(90deg,#ff4b4b,#ff8c42);border-radius:6px;width:0%;pointer-events:none}',
+  '.se-progress-thumb{position:absolute;top:50%;left:0%;transform:translate(-50%,-50%);width:14px;height:14px;background:#fff;border:2px solid #ff4b4b;border-radius:50%;pointer-events:none;box-shadow:0 1px 4px rgba(0,0,0,0.2)}',
+  '.se-text-wrap{line-height:2;display:inline}'
+].join('\n');
+document.head.appendChild(style);
 
 })();
+
 
 // ============================================================
 // localStorage helpers - at TOP for hoisting safety
@@ -1175,6 +1151,9 @@ function renderCards(tab) {
 function renderCard(d, i, id, tag) {
   var starClass = tag === 'star' ? ' tagged-star' : '';
   var doneClass = tag === 'done' ? ' tagged-done' : '';
+  var cid = 'se-card-' + id;
+  var wordSpans = SpeechEngine.buildWordSpans(d.en, cid);
+  var player = SpeechEngine.buildPlayer(cid, d.en);
   return '<div class="card-wrap" data-id="' + id + '" data-cn="' + escHtml(d.cn) + '" data-en="' + escHtml(d.en) + '" data-scene="' + escHtml(d.scene) + '">' +
     '<div class="flip-card" id="card-' + id + '" onclick="flipCard(\'' + id + '\')">' +
       '<div class="flip-inner">' +
@@ -1186,16 +1165,15 @@ function renderCard(d, i, id, tag) {
           '</div>' +
           '<div class="card-cn">' + escHtml(d.cn) + '</div>' +
           '<div class="card-scene-tag">' + escHtml(d.scene) + '</div>' +
-          '<button class="speak-btn-front" onclick="speakText(event,\'' + escJs(d.en) + '\')" title="朗读">🔈</button>' +
         '</div>' +
-        '<div class="flip-back">' +
+        '<div class="flip-back" onclick="event.stopPropagation()">' +
           '<div class="card-actions">' +
             '<button class="card-action-btn' + starClass + '" onclick="tagCard(event,\'' + id + '\',\'star\')" title="重要">⭐</button>' +
             '<button class="card-action-btn' + doneClass + '" onclick="tagCard(event,\'' + id + '\',\'done\')" title="掌握">✅</button>' +
           '</div>' +
-          '<div class="card-en">' + escHtml(d.en) + '</div>' +
-          '<div class="card-hint">点击翻回</div>' +
-          '<button class="speak-btn-front" onclick="speakText(event,\'' + escJs(d.en) + '\')" title="朗读">🔈</button>' +
+          '<div class="card-en">' + wordSpans + '</div>' +
+          player +
+          '<div class="card-hint" style="margin-top:8px">点击翻回</div>' +
         '</div>' +
       '</div>' +
     '</div>' +
@@ -1229,14 +1207,15 @@ function renderTopics() {
   if (!list) return;
   var html = '';
   TOPICS.forEach(function(t, i) {
-    var cnBlock = t.cn ? '<div class="topic-cn" id="topic-cn-' + i + '" style="font-size:13px;line-height:1.85;color:#888;margin-bottom:10px;padding:10px 12px;background:#fff5f5;border-radius:10px;border-left:3px solid #ff4b4b;">' + escHtml(t.cn) + '</div>' : '';
+    var cid = 'se-topic-' + i;
+    var cnBlock = t.cn ? '<div class="topic-cn" style="font-size:13px;line-height:1.85;color:#888;margin-bottom:10px;padding:10px 12px;background:#fff5f5;border-radius:10px;border-left:3px solid #ff4b4b;">' + escHtml(t.cn) + '</div>' : '';
     html += '<div class="topic-card">' +
       '<div class="topic-date">📅 ' + t.date + '</div>' +
       '<div class="topic-title">' + escHtml(t.title) + '</div>' +
       cnBlock +
-      '<div class="topic-body" id="topic-body-' + i + '">' + escHtml(t.body) + '</div>' +
-      '<div class="topic-actions">' +
-        '<button class="topic-btn topic-btn-speak" id="topic-speak-btn-' + i + '" onclick="speakTopic(' + i + ')">🔈 朗读英文</button>' +
+      '<div class="topic-body" id="topic-body-' + i + '" style="font-size:14px;line-height:2;font-weight:500">' + SpeechEngine.buildWordSpans(t.body, cid) + '</div>' +
+      SpeechEngine.buildPlayer(cid, t.body) +
+      '<div class="topic-actions" style="margin-top:8px">' +
         '<button class="topic-btn topic-btn-copy" onclick="copyTopic(' + i + ')">📋 复制</button>' +
       '</div>' +
     '</div>';
@@ -1287,19 +1266,9 @@ function deleteCard(e, id) {
   showToast('🗑 已删除');
 }
 
-function speakText(e, text) {
-  e.stopPropagation();
-  var btn = e.currentTarget;
-  btn.classList.add('speaking');
-  SpeechEngine.activeBtn = btn;
-  SpeechEngine.speak(text, btn);
-}
+// speakText removed — using SpeechEngine directly
 
-function speakTopic(i) {
-  var body = document.getElementById('topic-body-' + i);
-  if (!body) return;
-  SpeechEngine.speak(body.textContent);
-}
+// speakTopic removed — using SpeechEngine directly
 
 function copyTopic(i) {
   var t = TOPICS[i];
