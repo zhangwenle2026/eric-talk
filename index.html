@@ -6,7 +6,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="app-version" content="20261103-2357">
+<meta name="app-version" content="20261103-2359">
 <meta name="theme-color" content="#e84040">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1357,6 +1357,7 @@ function renderTopics() {
   var list = document.getElementById('topics-list');
   if (!list) return;
   var html = '';
+  TOPICS.sort(function(a, b) { return new Date(b.date).getTime() - new Date(a.date).getTime(); });
   TOPICS.forEach(function(t, i) {
     var cid = 'se-topic-' + i;
     var cnBlock = t.cn ? '<div class="topic-cn" style="font-size:13px;line-height:1.85;color:#888;margin-bottom:10px;padding:10px 12px;background:#fff5f5;border-radius:10px;border-left:3px solid #ff4b4b;">' + escHtml(t.cn) + '</div>' : '';
