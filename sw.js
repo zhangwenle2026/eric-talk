@@ -1,4 +1,4 @@
-const CACHE = 'eric-talk-v1';
+const CACHE = 'eric-talk-v2';
 const ASSETS = [
   '/eric-talk/',
   '/eric-talk/index.html',
@@ -29,18 +29,17 @@ self.addEventListener('activate', function(e) {
 });
 
 self.addEventListener('fetch', function(e) {
+  // network-first: always try fresh content, fall back to cache offline
   e.respondWith(
-    caches.match(e.request).then(function(cached) {
-      if (cached) return cached;
-      return fetch(e.request).then(function(resp) {
-        if (!resp || resp.status !== 200 || resp.type !== 'basic') return resp;
+    fetch(e.request).then(function(resp) {
+      if (resp && resp.status === 200) {
         var clone = resp.clone();
-        caches.open(CACHE).then(function(cache) {
-          cache.put(e.request, clone);
-        });
-        return resp;
-      }).catch(function() {
-        return caches.match('/eric-talk/index.html');
+        caches.open(CACHE).then(function(cache) { cache.put(e.request, clone); });
+      }
+      return resp;
+    }).catch(function() {
+      return caches.match(e.request).then(function(cached) {
+        return cached || caches.match('/eric-talk/index.html');
       });
     })
   );
